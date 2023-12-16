@@ -12,6 +12,7 @@ class Node
 
     @handlers = {}
     @callbacks = {}
+    @periodic_tasks = []
 
     # Register an initial handler for the init message
     on "init" do |msg|
@@ -21,6 +22,9 @@ class Node
 
       reply! msg, type: "init_ok"
       log "Node #{@node_id} initialized"
+
+      # Spawn periodic task handlers
+      start_periodic_tasks!
     end
   end
 
@@ -73,6 +77,24 @@ class Node
     raise "Already have a handler for #{type}!" if @handlers[type]
 
     @handlers[type] = handler
+  end
+
+  # Periodically evaluates block every dt seconds with the node lock
+  # held--helpful for building periodic replication tasks, timeouts, etc.
+  def every(dt, &block)
+    @periodic_tasks << { dt: dt, f: block }
+  end
+
+  # Launches threads to process periodic handlers
+  def start_periodic_tasks!
+    @periodic_tasks.each do |task|
+      Thread.new do
+        loop do
+          task[:f].call
+          sleep task[:dt]
+        end
+      end
+    end
   end
 
   # Loops, processing messages from STDIN
