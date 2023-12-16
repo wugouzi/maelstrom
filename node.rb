@@ -1,5 +1,81 @@
 require "json"
 
+class RPCError < StandardError
+  class << self
+    def timeout(msg)
+      new 0, msg
+    end
+    def not_supported(msg)
+      new 10, msg
+    end
+    def temporarily_unavailable(msg)
+      new 11, msg
+    end
+    def malformed_request(msg)
+      new 12, msg
+    end
+    def crash(msg)
+      new 13, msg
+    end
+    def abort(msg)
+      new 14, msg
+    end
+    def key_does_not_exist(msg)
+      new 20, msg
+    end
+    def precondition_failed(msg)
+      new 22, msg
+    end
+    def txn_conflict(msg)
+      new 30, msg
+    end
+  end
+
+  attr_reader :code
+
+  def initialize(code, text)
+    @code = code
+    @text = text
+    super(text)
+  end
+
+  # Constructs a JSON error response
+  def to_json
+    { type: "error", code: @code, text: @text }
+  end
+end
+
+class Promise
+  WAITING = Object.new
+  TIMEOUT = 5
+
+  def initialize
+    @lock = Mutex.new
+    @cvar = ConditionVariable.new
+    @value = WAITING
+  end
+
+  # Blocks this thread until a value is delivered, then returns it.
+  def await
+    return @value if @value != WAITING
+
+    # Not ready yet; block
+    @lock.synchronize { @cvar.wait @lock, TIMEOUT }
+
+    if @value != WAITING
+      return @value
+    else
+      raise "promise timed out"
+    end
+  end
+
+  def deliver!(value)
+    @value = value
+    @lock.synchronize { @cvar.broadcast }
+    self
+  end
+end
+
 class Node
   attr_reader :node_id, :node_ids
 
@@ -37,6 +113,16 @@ class Node
       body = body.merge({ msg_id: msg_id })
       send! dest, body
     end
+  end
+
+  # Sends a synchronous RPC request, blocking this thread and returning the
+  # response message.
+  def sync_rpc!(dest, body)
+    p = Promise.new
+    rpc! dest, body do |response|
+      p.deliver! response
+    end
+    p.await
   end
 
   # Writes a message to stderr
@@ -119,6 +205,7 @@ class Node
           handler.call msg
         rescue => e
           log "Exception handling #{msg}:\n#{e.full_message}"
+          reply! msg, RPCError.crash(e.full_message).to_json
         end
       end
     end
